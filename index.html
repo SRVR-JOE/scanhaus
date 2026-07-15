@@ -94,7 +94,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <header>
   <span class="wordmark">SCAN<em>HAUS</em></span>
-  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.3</span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.4</span>
   <span id="count">0<small>CODES</small></span>
 </header>
 
@@ -132,6 +132,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 <div id="exportbar">
   <button id="btnXlsx" class="primary">Export .xlsx</button>
   <button id="btnShare">Share</button>
+  <button id="btnTeams">Teams</button>
   <button id="btnClear">Clear</button>
 </div>
 <div id="status">idle</div>
@@ -383,6 +384,63 @@ $("btnShare").onclick = async ()=>{
     catch(e){ /* user cancelled */ }
   } else { XLSX.writeFile(buildWorkbook(), fname()); }
 };
+/* ── Teams: post scan list as an Adaptive Card via a Workflows webhook ──
+   Setup once: Teams channel → ⋯ → Workflows → "Post to a channel when a
+   webhook request is received" → copy the URL → tap TEAMS here and paste.
+   Tap TEAMS with zero codes scanned to change the saved URL.
+   Note: webhooks post cards, not files — Share still sends the xlsx. */
+const TEAMS_KEY = "scanhaus.teams.webhook";
+
+function teamsCard(){
+  const codes = [...store.values()].sort((a,b)=>a.first-b.first);
+  let lines = codes.map(r=>`${r.value}  (${r.format}${r.count>1?" ×"+r.count:""})`).join("\n");
+  if(lines.length > 3800) lines = lines.slice(0, 3800) + "\n… (truncated — full list in xlsx)";
+  return {
+    type: "message",
+    attachments: [{
+      contentType: "application/vnd.microsoft.card.adaptive",
+      contentUrl: null,
+      content: {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        type: "AdaptiveCard", version: "1.4",
+        body: [
+          { type:"TextBlock", text:"SCANHAUS — RACK SCAN", weight:"Bolder", size:"Medium" },
+          { type:"TextBlock", text:`${store.size} unique codes · ${new Date().toLocaleString()}`,
+            isSubtle:true, spacing:"None" },
+          { type:"TextBlock", text:lines, wrap:true, fontType:"Monospace", spacing:"Medium" },
+        ],
+      },
+    }],
+  };
+}
+
+$("btnTeams").onclick = async ()=>{
+  let url = localStorage.getItem(TEAMS_KEY) || "";
+  if(!url || store.size===0){
+    const entered = prompt("Teams Workflows webhook URL:\n(channel → ⋯ → Workflows → 'Post to a channel when a webhook request is received')", url);
+    if(entered === null) return;
+    url = entered.trim();
+    if(!url) return status("no webhook URL set");
+    localStorage.setItem(TEAMS_KEY, url);
+    if(store.size===0) return status("webhook saved — scan some codes, then tap Teams");
+  }
+  status("posting to Teams…");
+  const body = JSON.stringify(teamsCard());
+  try{
+    // normal CORS attempt first (some tenants allow it)
+    const r = await fetch(url, { method:"POST",
+      headers:{ "Content-Type":"application/json" }, body });
+    status(r.ok ? `posted ${store.size} codes to Teams` : `Teams said HTTP ${r.status}`);
+  }catch(e){
+    // CORS-blocked: fire-and-forget fallback (request sends, response unreadable)
+    try{
+      await fetch(url, { method:"POST", mode:"no-cors",
+        headers:{ "Content-Type":"text/plain" }, body });
+      status(`sent ${store.size} codes to Teams (check the channel)`);
+    }catch(e2){ status("Teams post failed: " + e2.message); }
+  }
+};
+
 $("btnClear").onclick = ()=>{
   if(store.size && confirm(`Clear ${store.size} scanned codes?`)){
     store.clear(); lastSeenAt.clear(); save(); renderAll(); status("cleared");

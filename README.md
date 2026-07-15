@@ -66,3 +66,20 @@ read; a code seen once at the edge of frame deserves a re-check.
 
 New-code scans say **"OH YEAH"** via text-to-speech. Drop a clip named
 `ohyeah.mp3` in the repo root and the app uses it automatically instead.
+
+## Send to Teams
+
+Two ways:
+
+1. **Share button** (sends the actual .xlsx): iOS share sheet → Teams app →
+   pick chat/channel. Works with Outlook/OneDrive too. No setup.
+2. **TEAMS button** (posts the code list as a card to one channel, one tap):
+   - In Teams: channel → **⋯ → Workflows → "Post to a channel when a webhook
+     request is received"** → finish the wizard → copy the URL.
+     Microsoft guide: https://support.microsoft.com/en-us/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498
+   - In SCANHAUS: tap **TEAMS**, paste the URL once (saved on the phone).
+     Tap TEAMS with zero codes scanned to change the URL later.
+   - Webhooks post messages/cards only — Microsoft doesn't allow file upload
+     via webhook, so the xlsx itself still travels via Share.
+   - Corporate tenants can disable Workflows creation; if the option is
+     missing, that's an IT policy thing — the Share path always works.
