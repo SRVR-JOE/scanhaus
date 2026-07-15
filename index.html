@@ -9,8 +9,6 @@
 <title>SCANHAUS — barcode → Excel</title>
 <link rel="manifest" href="manifest.webmanifest" />
 
-<!-- ZXing multi-format decoder (Code128/39, EAN/UPC, ITF, QR, DataMatrix…) -->
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <!-- SheetJS for real .xlsx export -->
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 
@@ -88,7 +86,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <header>
   <span class="wordmark">SCAN<em>HAUS</em></span>
-  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx</span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.2</span>
   <span id="count">0<small>CODES</small></span>
 </header>
 
@@ -119,19 +117,30 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 </div>
 <div id="status">idle</div>
 
-<script>
-"use strict";
+<script type="module">
 /* ────────────────────────────────────────────────────────────────
-   SCANHAUS — continuous barcode scanner → Excel
-   Session model: Map(value → {value, format, count, first, last}),
-   persisted to localStorage so a Safari reload never loses a rack.
+   SCANHAUS v0.2 — zxing-wasm engine
+   The C++ ZXing core compiled to WASM: far stronger 1D decode than
+   the old JS port. We pull full-res frames off the camera, crop to
+   the reticle zone (higher pixel density on the label), and decode
+   up to 8 symbols per frame with tryHarder + tryRotate + tryInvert.
    ──────────────────────────────────────────────────────────────── */
+import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.0/reader/+esm";
+
 const $ = (id) => document.getElementById(id);
 const store = new Map();
 const LS_KEY = "scanhaus.session.v1";
-const COOLDOWN_MS = 1800;            // per-value re-count cooldown
+const COOLDOWN_MS = 1800;
 const lastSeenAt = new Map();
-let scanning = false, reader = null, track = null, wakeLock = null;
+let scanning = false, stream = null, track = null, wakeLock = null, decodeBusy = false;
+
+const READ_OPTS = {
+  formats: ["Code128","Code39","EAN-13","EAN-8","UPC-A","UPC-E","ITF","Codabar","QRCode","DataMatrix"],
+  tryHarder: true,
+  tryRotate: true,
+  tryInvert: true,
+  maxNumberOfSymbols: 8,
+};
 
 /* ── persistence ── */
 function save(){ localStorage.setItem(LS_KEY, JSON.stringify([...store.values()])); }
@@ -176,11 +185,10 @@ function beep(){
 
 /* ── scan intake ── */
 function ingest(value, format){
-  value = value.trim(); if(!value) return;
+  value = (value||"").trim(); if(!value) return;
   const now = Date.now();
-  if((now - (lastSeenAt.get(value)||0)) < COOLDOWN_MS) return;   // debounce re-reads
+  if((now - (lastSeenAt.get(value)||0)) < COOLDOWN_MS) return;
   lastSeenAt.set(value, now);
-
   const existing = store.get(value);
   if(existing){ existing.count++; existing.last = now; }
   else{
@@ -191,44 +199,31 @@ function ingest(value, format){
   save(); renderAll();
 }
 
-/* ── camera + decode loop ── */
+/* ── camera ── */
 async function startScan(){
-  if(!window.ZXing){ status("decoder failed to load — check connection"); return; }
-  const hints = new Map();
-  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-    ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
-    ZXing.BarcodeFormat.EAN_13,  ZXing.BarcodeFormat.EAN_8,
-    ZXing.BarcodeFormat.UPC_A,   ZXing.BarcodeFormat.UPC_E,
-    ZXing.BarcodeFormat.ITF,     ZXing.BarcodeFormat.CODABAR,
-    ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX,
-  ]);
-  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-  reader = new ZXing.BrowserMultiFormatReader(hints, 120 /* ms between decode attempts */);
-
-  const constraints = { audio:false, video:{
-    facingMode:{ ideal:"environment" },
-    width:{ ideal:1920 }, height:{ ideal:1080 },
-  }};
-
   try{
-    await reader.decodeFromConstraints(constraints, $("video"), (result)=>{
-      if(result) ingest(result.getText(), ZXing.BarcodeFormat[result.getBarcodeFormat()]);
-    });
+    stream = await navigator.mediaDevices.getUserMedia({ audio:false, video:{
+      facingMode:{ ideal:"environment" },
+      width:{ ideal:3840 }, height:{ ideal:2160 },   // ask for 4K; iOS gives best available
+    }});
   }catch(e){ status("camera error: " + e.message); return; }
+
+  const video = $("video");
+  video.srcObject = stream;
+  await video.play();
 
   scanning = true;
   $("btnScan").textContent = "Stop scan";
   $("btnScan").classList.remove("primary"); $("btnScan").classList.add("armed");
-  status("scanning — sweep slowly, ~18in from labels");
 
-  // keep screen awake during a rack sweep
   try{ wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){}
 
-  // expose zoom / torch if the camera track supports them
-  setTimeout(()=>{
-    const stream = $("video").srcObject;
-    track = stream && stream.getVideoTracks()[0];
-    if(!track || !track.getCapabilities) return;
+  track = stream.getVideoTracks()[0];
+  const s = track.getSettings();
+  status(`scanning @ ${s.width}×${s.height} — fill the brackets with the label`);
+
+  // zoom / torch if exposed
+  if(track.getCapabilities){
     const cap = track.getCapabilities();
     if(cap.zoom){
       const z = $("zoom");
@@ -243,12 +238,46 @@ async function startScan(){
       bt.onclick = ()=>{ on=!on; bt.classList.toggle("armed",on);
         track.applyConstraints({ advanced:[{ torch:on }] }).catch(()=>{}); };
     }
-  }, 800);
+  }
+  decodeLoop();
 }
+
+/* ── decode loop: full-res frame, cropped to the reticle zone ── */
+const grab = document.createElement("canvas");
+const gctx = grab.getContext("2d", { willReadFrequently:true });
+
+async function decodeLoop(){
+  const video = $("video");
+  let frames = 0, t0 = performance.now();
+  while(scanning){
+    if(!decodeBusy && video.readyState >= 2 && video.videoWidth){
+      decodeBusy = true;
+      try{
+        // reticle zone = inset 8% x / 12% y (matches the CSS brackets)
+        const vw = video.videoWidth, vh = video.videoHeight;
+        const sx = vw*0.08, sy = vh*0.12, sw = vw*0.84, sh = vh*0.76;
+        grab.width = sw; grab.height = sh;
+        gctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+        const img = gctx.getImageData(0, 0, sw, sh);
+        const results = await readBarcodes(img, READ_OPTS);
+        for(const r of results){ if(r.isValid) ingest(r.text, r.format); }
+        frames++;
+        if(frames % 20 === 0){
+          const fps = (frames*1000/(performance.now()-t0)).toFixed(1);
+          status(`scanning @ ${vw}×${vh} · decode ${fps}/s · ${store.size} codes`);
+        }
+      }catch(e){ /* keep looping */ }
+      decodeBusy = false;
+    }
+    await new Promise(r=>setTimeout(r, 120));
+  }
+}
+
 function stopScan(){
   scanning = false;
-  try{ reader && reader.reset(); }catch(e){}
+  try{ stream && stream.getTracks().forEach(t=>t.stop()); }catch(e){}
   try{ wakeLock && wakeLock.release(); }catch(e){}
+  $("video").srcObject = null;
   $("btnScan").textContent = "Start scan";
   $("btnScan").classList.add("primary"); $("btnScan").classList.remove("armed");
   $("zoomwrap").style.display = "none"; $("btnTorch").style.display = "none";
@@ -288,7 +317,7 @@ $("btnShare").onclick = async ()=>{
   if(navigator.canShare && navigator.canShare({files:[file]})){
     try{ await navigator.share({files:[file], title:"Rack scan"}); status("shared"); }
     catch(e){ /* user cancelled */ }
-  } else { XLSX.writeFile(buildWorkbook(), fname()); }  // fallback: download
+  } else { XLSX.writeFile(buildWorkbook(), fname()); }
 };
 $("btnClear").onclick = ()=>{
   if(store.size && confirm(`Clear ${store.size} scanned codes?`)){
