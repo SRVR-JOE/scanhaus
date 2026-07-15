@@ -92,3 +92,21 @@ work email (saved on the phone); tap with an empty scan list to change who.
 Deep links can't attach files (Microsoft limitation) — for the xlsx, use
 Share → Teams: after a couple sends, iOS pins that person in the share
 sheet's suggestion row for true one-tap file sends.
+
+## Decode engines (v0.6)
+
+| Engine | What | Cost | Where |
+|---|---|---|---|
+| **ZXING** | zxing-wasm, default | free | PWA |
+| **STRICH** | commercial web SDK, big step up on hard labels | free trial → sub | PWA, ENGINE button |
+| **NATIVE** | Google ML Kit on the Neural Engine, best available | free (needs Apple dev setup) | Capacitor iOS build, auto |
+
+**STRICH trial:** https://strich.io → Start free trial → Customer Portal →
+create a license key **scoped to `https://srvr-joe.github.io`** → in the app,
+tap ENGINE until it reads STRICH, start a scan, paste the key (asked once).
+Also worth benchmarking: Scandit (https://www.scandit.com/products/barcode-scanning/,
+enterprise pricing) and Dynamsoft (https://www.dynamsoft.com/barcode-reader/overview/,
+30-day trial) — STRICH is integrated here because it's the affordable one
+built specifically for web apps.
+
+**Native build:** see `docs/NATIVE.md`.

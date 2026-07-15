@@ -39,6 +39,8 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var
 /* viewfinder */
 #vf{position:relative;background:#000;flex:0 0 46vh;overflow:hidden}
 #video{width:100%;height:100%;object-fit:cover;display:block}
+#strichHost{position:absolute;inset:0;display:none;z-index:5}
+#strichHost.on{display:block}
 #flash{position:absolute;inset:0;background:var(--ok);opacity:0;pointer-events:none;transition:opacity .25s}
 #flash.hit{opacity:.35;transition:none}
 .reticle{position:absolute;inset:12% 8%;pointer-events:none}
@@ -87,6 +89,8 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 #modalval{word-break:break-all;font-weight:600;margin-bottom:14px}
 #modalbox .btns{display:flex;gap:8px}
 #modalbox .btns button{flex:1}
+body.native-scan, body.native-scan #vf{background:transparent!important}
+body.native-scan #video{display:none}
 #status{font-size:10px;color:var(--dim);padding:4px 14px 8px;background:var(--panel);text-align:center;letter-spacing:.08em}
 </style>
 </head>
@@ -94,13 +98,14 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <header>
   <span class="wordmark">SCAN<em>HAUS</em></span>
-  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.5</span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.6</span>
   <span id="count">0<small>CODES</small></span>
 </header>
 
 <div id="vf">
   <video id="video" playsinline muted></video>
   <div class="reticle"><i></i><i></i><i></i><i></i></div>
+  <div id="strichHost"></div>
   <div id="flash"></div>
   <div id="lastscan">Tap START SCAN and sweep the rack slowly.</div>
 </div>
@@ -108,6 +113,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 <div id="controls">
   <button id="btnScan" class="primary">Start scan</button>
   <button id="btnTorch" style="display:none">Torch</button>
+  <button id="btnEngine">ZXING</button>
   <div id="zoomwrap"><span>ZOOM</span><input type="range" id="zoom" /></div>
 </div>
 
@@ -265,8 +271,92 @@ $("btnDupSkip").onclick = ()=>{
   closeDupModal();
 };
 
+/* ── decode engines ──────────────────────────────────────────────
+   ZXING  — free WASM engine (default)
+   STRICH — commercial SDK, needs a license key (30-day free trial at
+            https://strich.io — key must be scoped to this app's URL)
+   NATIVE — auto-selected inside the Capacitor iOS build (ML Kit on the
+            Neural Engine); see docs/NATIVE.md
+   ──────────────────────────────────────────────────────────────── */
+const ENGINE_KEY = "scanhaus.engine";
+const STRICH_KEY = "scanhaus.strich.license";
+const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+let strichReader = null;
+
+function engine(){ return isNative ? "native" : (localStorage.getItem(ENGINE_KEY) || "zxing"); }
+function engineLabel(){ $("btnEngine").textContent = engine().toUpperCase(); }
+engineLabel();
+if(isNative) $("btnEngine").disabled = true;
+
+$("btnEngine").onclick = ()=>{
+  if(scanning) stopScan();
+  const next = engine()==="zxing" ? "strich" : "zxing";
+  localStorage.setItem(ENGINE_KEY, next);
+  engineLabel();
+  status("engine: " + next.toUpperCase() + (next==="strich" ? " — needs license key on first scan" : " (free)"));
+};
+
+function armUI(on){
+  scanning = on;
+  $("btnScan").textContent = on ? "Stop scan" : "Start scan";
+  $("btnScan").classList.toggle("primary", !on);
+  $("btnScan").classList.toggle("armed", on);
+  if(!on){ $("zoomwrap").style.display="none"; $("btnTorch").style.display="none"; }
+}
+
+/* ── STRICH engine ── */
+async function startStrich(){
+  let key = localStorage.getItem(STRICH_KEY) || "";
+  if(!key){
+    key = (prompt("STRICH license key:\n(free trial at strich.io → Customer Portal → create key scoped to srvr-joe.github.io)") || "").trim();
+    if(!key) return status("no STRICH key — staying idle");
+    localStorage.setItem(STRICH_KEY, key);
+  }
+  status("loading STRICH engine…");
+  try{
+    const { StrichSDK, BarcodeReader } = await import("https://cdn.jsdelivr.net/npm/@pixelverse/strichjs-sdk@latest/dist/strich.js");
+    if(!StrichSDK.isInitialized || !StrichSDK.isInitialized()){
+      try{ await StrichSDK.initialize(key); }
+      catch(e){ localStorage.removeItem(STRICH_KEY); return status("STRICH license rejected: " + (e.message||e)); }
+    }
+    $("strichHost").classList.add("on");
+    strichReader = await new BarcodeReader({
+      selector: "#strichHost",
+      engine: {
+        symbologies: ["code128","code39","ean13","ean8","upca","upce","qr","datamatrix","codabar"],
+        duplicateInterval: 1800,
+      },
+      frameSource: { resolution: "full-hd" },
+    }).initialize();
+    strichReader.detected = (dets)=>{ for(const d of dets) ingest(d.data, (d.symbology||"strich").toUpperCase()); };
+    await strichReader.start();
+    armUI(true);
+    try{ wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){}
+    status("scanning (STRICH) — fill the frame with the label");
+  }catch(e){ $("strichHost").classList.remove("on"); status("STRICH failed to load: " + (e.message||e)); }
+}
+
+/* ── native ML Kit engine (inside Capacitor iOS build) ── */
+async function startNative(){
+  const BS = window.Capacitor?.Plugins?.BarcodeScanner;
+  if(!BS) return status("native scanner plugin not found");
+  try{
+    await BS.requestPermissions();
+    document.body.classList.add("native-scan");
+    await BS.addListener("barcodeScanned", ({barcode})=> ingest(barcode.rawValue, barcode.format||"MLKIT"));
+    await BS.startScan();
+    armUI(true);
+    status("scanning (ML Kit native)");
+  }catch(e){ status("native scan error: " + (e.message||e)); }
+}
+
 /* ── camera ── */
 async function startScan(){
+  if(engine()==="native") return startNative();
+  if(engine()==="strich") return startStrich();
+  return startZxing();
+}
+async function startZxing(){
   try{
     stream = await navigator.mediaDevices.getUserMedia({ audio:false, video:{
       facingMode:{ ideal:"environment" },
@@ -278,9 +368,7 @@ async function startScan(){
   video.srcObject = stream;
   await video.play();
 
-  scanning = true;
-  $("btnScan").textContent = "Stop scan";
-  $("btnScan").classList.remove("primary"); $("btnScan").classList.add("armed");
+  armUI(true);
 
   try{ wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){}
 
@@ -340,13 +428,14 @@ async function decodeLoop(){
 }
 
 function stopScan(){
-  scanning = false;
   try{ stream && stream.getTracks().forEach(t=>t.stop()); }catch(e){}
   try{ wakeLock && wakeLock.release(); }catch(e){}
   $("video").srcObject = null;
-  $("btnScan").textContent = "Start scan";
-  $("btnScan").classList.add("primary"); $("btnScan").classList.remove("armed");
-  $("zoomwrap").style.display = "none"; $("btnTorch").style.display = "none";
+  if(strichReader){ try{ strichReader.destroy(); }catch(e){} strichReader = null; }
+  $("strichHost").classList.remove("on");
+  const BS = window.Capacitor?.Plugins?.BarcodeScanner;
+  if(isNative && BS){ try{ BS.stopScan(); BS.removeAllListeners(); }catch(e){} document.body.classList.remove("native-scan"); }
+  armUI(false);
   status("stopped — " + store.size + " unique codes");
 }
 $("btnScan").onclick = ()=> scanning ? stopScan() : startScan();

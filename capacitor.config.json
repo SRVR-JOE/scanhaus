@@ -1,0 +1,9 @@
+{
+  "appId": "haus.pixel.scanhaus",
+  "appName": "SCANHAUS",
+  "webDir": ".",
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#0c0b09"
+  }
+}
