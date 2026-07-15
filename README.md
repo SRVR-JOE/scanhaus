@@ -83,3 +83,12 @@ Two ways:
      via webhook, so the xlsx itself still travels via Share.
    - Corporate tenants can disable Workflows creation; if the option is
      missing, that's an IT policy thing — the Share path always works.
+
+## One-tap DM to a coworker
+
+The **→ [name]** button deep-links into your Teams chat with a saved person,
+scan list pre-typed — hit send in Teams. First tap asks for their name and
+work email (saved on the phone); tap with an empty scan list to change who.
+Deep links can't attach files (Microsoft limitation) — for the xlsx, use
+Share → Teams: after a couple sends, iOS pins that person in the share
+sheet's suggestion row for true one-tap file sends.

@@ -77,8 +77,8 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 #empty{color:var(--dim);text-align:center;padding:40px 20px;font-family:var(--display);letter-spacing:.2em;text-transform:uppercase}
 
 /* export bar */
-#exportbar{display:flex;gap:8px;padding:10px 14px;background:var(--panel);border-top:1px solid var(--line)}
-#exportbar button{flex:1}
+#exportbar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;background:var(--panel);border-top:1px solid var(--line)}
+#exportbar button{flex:1;min-width:28%}
 /* duplicate-scan modal */
 #modal{position:fixed;inset:0;background:rgba(12,11,9,.82);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
 #modal.open{display:flex}
@@ -94,7 +94,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <header>
   <span class="wordmark">SCAN<em>HAUS</em></span>
-  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.4</span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.5</span>
   <span id="count">0<small>CODES</small></span>
 </header>
 
@@ -133,6 +133,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
   <button id="btnXlsx" class="primary">Export .xlsx</button>
   <button id="btnShare">Share</button>
   <button id="btnTeams">Teams</button>
+  <button id="btnPerson">→ Send to…</button>
   <button id="btnClear">Clear</button>
 </div>
 <div id="status">idle</div>
@@ -439,6 +440,43 @@ $("btnTeams").onclick = async ()=>{
       status(`sent ${store.size} codes to Teams (check the channel)`);
     }catch(e2){ status("Teams post failed: " + e2.message); }
   }
+};
+
+/* ── One-tap DM: Teams deep link to a saved person ──
+   Opens your Teams chat with them, scan list pre-typed — you hit send.
+   First tap asks for their name + work email, saved on the phone.
+   To change the person: tap while the scan list is empty. */
+const PERSON_KEY = "scanhaus.teams.person";
+
+function personLabel(){
+  try{
+    const p = JSON.parse(localStorage.getItem(PERSON_KEY)||"null");
+    $("btnPerson").textContent = p ? "→ " + p.name.split(" ")[0] : "→ Send to…";
+    return p;
+  }catch(e){ return null; }
+}
+personLabel();
+
+$("btnPerson").onclick = ()=>{
+  let p = personLabel();
+  if(!p || store.size===0){
+    const name = prompt("Coworker name:", p ? p.name : "Michael Miles");
+    if(name === null) return;
+    const email = prompt("Their work email (Teams account):", p ? p.email : "");
+    if(email === null || !email.trim()) return status("no email set");
+    p = { name: name.trim() || email.trim(), email: email.trim() };
+    localStorage.setItem(PERSON_KEY, JSON.stringify(p));
+    personLabel();
+    if(store.size===0) return status(`saved — scans will send to ${p.name}`);
+  }
+  const codes = [...store.values()].sort((a,b)=>a.first-b.first);
+  let msg = `SCANHAUS rack scan — ${store.size} codes · ${new Date().toLocaleString()}\n` +
+            codes.map(r=>r.value).join("\n");
+  if(msg.length > 1500) msg = msg.slice(0,1500) + "\n… (full list in xlsx — sending via Share)";
+  const link = "https://teams.microsoft.com/l/chat/0/0?users=" +
+    encodeURIComponent(p.email) + "&message=" + encodeURIComponent(msg);
+  status(`opening Teams chat with ${p.name}…`);
+  window.location.href = link;
 };
 
 $("btnClear").onclick = ()=>{
