@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0c0b09" />
+<title>SCANHAUS — barcode → Excel</title>
+<link rel="manifest" href="manifest.webmanifest" />
+
+<!-- ZXing multi-format decoder (Code128/39, EAN/UPC, ITF, QR, DataMatrix…) -->
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<!-- SheetJS for real .xlsx export -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+<style>
+/* ── PIXEL HAUS tokens: ink / cream / burnt red ── */
+:root{
+  --ink:#0c0b09; --panel:#16130e; --panel2:#1e1a13; --line:#2c2619;
+  --cream:#ede4d0; --dim:#8f8672; --red:#b5391f; --redglow:#e0512f;
+  --amber:#d69a2d; --ok:#7a9455;
+  --display:"Big Shoulders",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@import url('https://fonts.googleapis.com/css2?family=Big+Shoulders:wght@700;800&family=IBM+Plex+Mono:wght@400;600&display=swap');
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{
+  background:var(--ink);color:var(--cream);font-family:var(--mono);font-size:14px;
+  display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+
+header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+.wordmark{font-family:var(--display);font-weight:800;font-size:20px;letter-spacing:.14em}
+.wordmark em{font-style:normal;color:var(--redglow)}
+#count{margin-left:auto;font-family:var(--display);font-weight:800;font-size:22px;color:var(--amber)}
+#count small{font-size:10px;letter-spacing:.15em;color:var(--dim);display:block;text-align:right}
+
+/* viewfinder */
+#vf{position:relative;background:#000;flex:0 0 46vh;overflow:hidden}
+#video{width:100%;height:100%;object-fit:cover;display:block}
+#flash{position:absolute;inset:0;background:var(--ok);opacity:0;pointer-events:none;transition:opacity .25s}
+#flash.hit{opacity:.35;transition:none}
+.reticle{position:absolute;inset:12% 8%;pointer-events:none}
+.reticle i{position:absolute;width:26px;height:26px;border:3px solid var(--redglow)}
+.reticle i:nth-child(1){top:0;left:0;border-right:0;border-bottom:0}
+.reticle i:nth-child(2){top:0;right:0;border-left:0;border-bottom:0}
+.reticle i:nth-child(3){bottom:0;left:0;border-right:0;border-top:0}
+.reticle i:nth-child(4){bottom:0;right:0;border-left:0;border-top:0}
+#lastscan{position:absolute;left:0;right:0;bottom:0;padding:8px 12px;background:rgba(12,11,9,.75);
+  font-size:12px;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* controls */
+#controls{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+button{
+  font-family:var(--display);font-weight:700;letter-spacing:.1em;text-transform:uppercase;font-size:13px;
+  color:var(--cream);background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:10px 12px;cursor:pointer
+}
+button:active{border-color:var(--dim)}
+button.primary{background:var(--red);border-color:var(--redglow)}
+button.armed{background:var(--amber);color:var(--ink)}
+#zoomwrap{display:none;flex:1;min-width:120px;align-items:center;gap:8px;font-size:10px;color:var(--dim)}
+input[type=range]{flex:1;accent-color:var(--redglow)}
+
+/* manual entry */
+#manual{display:flex;gap:8px;padding:0 14px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+#manual input{flex:1;font-family:var(--mono);font-size:16px;color:var(--cream);background:var(--ink);
+  border:1px solid var(--line);border-radius:3px;padding:10px}
+
+/* scan list */
+#list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 14px}
+.row{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.row .val{font-weight:600;word-break:break-all;flex:1}
+.row .fmt{font-size:10px;letter-spacing:.12em;color:var(--dim);text-transform:uppercase}
+.row .n{font-family:var(--display);font-weight:800;color:var(--amber);min-width:2ch;text-align:right}
+.row .del{color:var(--dim);background:none;border:none;font-size:16px;padding:2px 6px}
+#empty{color:var(--dim);text-align:center;padding:40px 20px;font-family:var(--display);letter-spacing:.2em;text-transform:uppercase}
+
+/* export bar */
+#exportbar{display:flex;gap:8px;padding:10px 14px;background:var(--panel);border-top:1px solid var(--line)}
+#exportbar button{flex:1}
+#status{font-size:10px;color:var(--dim);padding:4px 14px 8px;background:var(--panel);text-align:center;letter-spacing:.08em}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="wordmark">SCAN<em>HAUS</em></span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx</span>
+  <span id="count">0<small>CODES</small></span>
+</header>
+
+<div id="vf">
+  <video id="video" playsinline muted></video>
+  <div class="reticle"><i></i><i></i><i></i><i></i></div>
+  <div id="flash"></div>
+  <div id="lastscan">Tap START SCAN and sweep the rack slowly.</div>
+</div>
+
+<div id="controls">
+  <button id="btnScan" class="primary">Start scan</button>
+  <button id="btnTorch" style="display:none">Torch</button>
+  <div id="zoomwrap"><span>ZOOM</span><input type="range" id="zoom" /></div>
+</div>
+
+<div id="manual">
+  <input id="manualIn" placeholder="Manual entry (damaged label)…" autocomplete="off" autocapitalize="characters" />
+  <button id="btnManual">Add</button>
+</div>
+
+<div id="list"><div id="empty">No codes yet</div></div>
+
+<div id="exportbar">
+  <button id="btnXlsx" class="primary">Export .xlsx</button>
+  <button id="btnShare">Share</button>
+  <button id="btnClear">Clear</button>
+</div>
+<div id="status">idle</div>
+
+<script>
+"use strict";
+/* ────────────────────────────────────────────────────────────────
+   SCANHAUS — continuous barcode scanner → Excel
+   Session model: Map(value → {value, format, count, first, last}),
+   persisted to localStorage so a Safari reload never loses a rack.
+   ──────────────────────────────────────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const store = new Map();
+const LS_KEY = "scanhaus.session.v1";
+const COOLDOWN_MS = 1800;            // per-value re-count cooldown
+const lastSeenAt = new Map();
+let scanning = false, reader = null, track = null, wakeLock = null;
+
+/* ── persistence ── */
+function save(){ localStorage.setItem(LS_KEY, JSON.stringify([...store.values()])); }
+function load(){
+  try{ (JSON.parse(localStorage.getItem(LS_KEY)||"[]")).forEach(r=>store.set(r.value,r)); }catch(e){}
+  renderAll();
+}
+
+/* ── UI ── */
+function renderAll(){
+  const list = $("list"); list.innerHTML = "";
+  if(store.size===0){ list.innerHTML = '<div id="empty">No codes yet</div>'; }
+  [...store.values()].sort((a,b)=>b.last-a.last).forEach(r=>list.appendChild(rowEl(r)));
+  $("count").firstChild.textContent = store.size;
+}
+function rowEl(r){
+  const d = document.createElement("div"); d.className="row";
+  d.innerHTML = `<span class="val">${escapeHtml(r.value)}</span>
+    <span class="fmt">${r.format}</span><span class="n">×${r.count}</span>`;
+  const del = document.createElement("button"); del.className="del"; del.textContent="✕";
+  del.onclick = ()=>{ store.delete(r.value); save(); renderAll(); };
+  d.appendChild(del);
+  return d;
+}
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function status(msg){ $("status").textContent = msg; }
+function flashHit(){
+  const f = $("flash"); f.classList.add("hit");
+  requestAnimationFrame(()=>setTimeout(()=>f.classList.remove("hit"),60));
+  beep();
+}
+let audioCtx = null;
+function beep(){
+  try{
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 1245; g.gain.value = 0.08;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.07);
+  }catch(e){}
+}
+
+/* ── scan intake ── */
+function ingest(value, format){
+  value = value.trim(); if(!value) return;
+  const now = Date.now();
+  if((now - (lastSeenAt.get(value)||0)) < COOLDOWN_MS) return;   // debounce re-reads
+  lastSeenAt.set(value, now);
+
+  const existing = store.get(value);
+  if(existing){ existing.count++; existing.last = now; }
+  else{
+    store.set(value, {value, format, count:1, first:now, last:now});
+    flashHit();
+    $("lastscan").textContent = `+ ${value} (${format})`;
+  }
+  save(); renderAll();
+}
+
+/* ── camera + decode loop ── */
+async function startScan(){
+  if(!window.ZXing){ status("decoder failed to load — check connection"); return; }
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+    ZXing.BarcodeFormat.EAN_13,  ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,   ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.ITF,     ZXing.BarcodeFormat.CODABAR,
+    ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX,
+  ]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  reader = new ZXing.BrowserMultiFormatReader(hints, 120 /* ms between decode attempts */);
+
+  const constraints = { audio:false, video:{
+    facingMode:{ ideal:"environment" },
+    width:{ ideal:1920 }, height:{ ideal:1080 },
+  }};
+
+  try{
+    await reader.decodeFromConstraints(constraints, $("video"), (result)=>{
+      if(result) ingest(result.getText(), ZXing.BarcodeFormat[result.getBarcodeFormat()]);
+    });
+  }catch(e){ status("camera error: " + e.message); return; }
+
+  scanning = true;
+  $("btnScan").textContent = "Stop scan";
+  $("btnScan").classList.remove("primary"); $("btnScan").classList.add("armed");
+  status("scanning — sweep slowly, ~18in from labels");
+
+  // keep screen awake during a rack sweep
+  try{ wakeLock = await navigator.wakeLock?.request("screen"); }catch(e){}
+
+  // expose zoom / torch if the camera track supports them
+  setTimeout(()=>{
+    const stream = $("video").srcObject;
+    track = stream && stream.getVideoTracks()[0];
+    if(!track || !track.getCapabilities) return;
+    const cap = track.getCapabilities();
+    if(cap.zoom){
+      const z = $("zoom");
+      z.min = cap.zoom.min; z.max = cap.zoom.max; z.step = cap.zoom.step || 0.1;
+      z.value = track.getSettings().zoom || cap.zoom.min;
+      $("zoomwrap").style.display = "flex";
+      z.oninput = ()=>track.applyConstraints({ advanced:[{ zoom:+z.value }] }).catch(()=>{});
+    }
+    if(cap.torch){
+      const bt = $("btnTorch"); bt.style.display = "";
+      let on = false;
+      bt.onclick = ()=>{ on=!on; bt.classList.toggle("armed",on);
+        track.applyConstraints({ advanced:[{ torch:on }] }).catch(()=>{}); };
+    }
+  }, 800);
+}
+function stopScan(){
+  scanning = false;
+  try{ reader && reader.reset(); }catch(e){}
+  try{ wakeLock && wakeLock.release(); }catch(e){}
+  $("btnScan").textContent = "Start scan";
+  $("btnScan").classList.add("primary"); $("btnScan").classList.remove("armed");
+  $("zoomwrap").style.display = "none"; $("btnTorch").style.display = "none";
+  status("stopped — " + store.size + " unique codes");
+}
+$("btnScan").onclick = ()=> scanning ? stopScan() : startScan();
+
+/* ── manual entry ── */
+$("btnManual").onclick = ()=>{ ingest($("manualIn").value, "MANUAL"); $("manualIn").value=""; };
+$("manualIn").addEventListener("keydown", e=>{ if(e.key==="Enter") $("btnManual").onclick(); });
+
+/* ── export ── */
+function buildWorkbook(){
+  const rows = [["Barcode","Type","Scans","First Seen","Last Seen"]];
+  [...store.values()].sort((a,b)=>a.first-b.first).forEach(r=>rows.push([
+    r.value, r.format, r.count,
+    new Date(r.first).toLocaleString(), new Date(r.last).toLocaleString(),
+  ]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{wch:32},{wch:12},{wch:7},{wch:20},{wch:20}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Rack Scan");
+  return wb;
+}
+const fname = ()=> "rack-scan-" + new Date().toISOString().slice(0,16).replace(/[T:]/g,"-") + ".xlsx";
+
+$("btnXlsx").onclick = ()=>{
+  if(store.size===0) return status("nothing to export");
+  XLSX.writeFile(buildWorkbook(), fname());
+  status("exported " + store.size + " codes");
+};
+$("btnShare").onclick = async ()=>{
+  if(store.size===0) return status("nothing to share");
+  const out = XLSX.write(buildWorkbook(), {bookType:"xlsx", type:"array"});
+  const file = new File([out], fname(),
+    {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file], title:"Rack scan"}); status("shared"); }
+    catch(e){ /* user cancelled */ }
+  } else { XLSX.writeFile(buildWorkbook(), fname()); }  // fallback: download
+};
+$("btnClear").onclick = ()=>{
+  if(store.size && confirm(`Clear ${store.size} scanned codes?`)){
+    store.clear(); lastSeenAt.clear(); save(); renderAll(); status("cleared");
+  }
+};
+
+load();
+</script>
+</body>
+</html>

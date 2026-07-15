@@ -1,0 +1,11 @@
+{
+  "name": "SCANHAUS — barcode to Excel",
+  "short_name": "SCANHAUS",
+  "description": "PIXEL HAUS continuous barcode scanner. Sweep a rack, export .xlsx.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0b09",
+  "theme_color": "#0c0b09",
+  "icons": []
+}
