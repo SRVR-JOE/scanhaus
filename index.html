@@ -79,6 +79,14 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 /* export bar */
 #exportbar{display:flex;gap:8px;padding:10px 14px;background:var(--panel);border-top:1px solid var(--line)}
 #exportbar button{flex:1}
+/* duplicate-scan modal */
+#modal{position:fixed;inset:0;background:rgba(12,11,9,.82);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+#modal.open{display:flex}
+#modalbox{background:var(--panel2);border:1px solid var(--amber);border-radius:3px;padding:18px;max-width:340px;width:100%}
+#modalbox h4{font-family:var(--display);font-weight:800;letter-spacing:.15em;text-transform:uppercase;color:var(--amber);margin:0 0 8px;font-size:14px}
+#modalval{word-break:break-all;font-weight:600;margin-bottom:14px}
+#modalbox .btns{display:flex;gap:8px}
+#modalbox .btns button{flex:1}
 #status{font-size:10px;color:var(--dim);padding:4px 14px 8px;background:var(--panel);text-align:center;letter-spacing:.08em}
 </style>
 </head>
@@ -86,7 +94,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <header>
   <span class="wordmark">SCAN<em>HAUS</em></span>
-  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.2</span>
+  <span style="font-size:10px;color:var(--dim);letter-spacing:.1em">PIXEL&nbsp;HAUS · barcode→xlsx · v0.3</span>
   <span id="count">0<small>CODES</small></span>
 </header>
 
@@ -110,6 +118,17 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <div id="list"><div id="empty">No codes yet</div></div>
 
+<div id="modal">
+  <div id="modalbox">
+    <h4>Already scanned</h4>
+    <div id="modalval"></div>
+    <div class="btns">
+      <button id="btnDupSkip">Skip</button>
+      <button id="btnDupCount" class="primary">Count again</button>
+    </div>
+  </div>
+</div>
+
 <div id="exportbar">
   <button id="btnXlsx" class="primary">Export .xlsx</button>
   <button id="btnShare">Share</button>
@@ -119,7 +138,7 @@ input[type=range]{flex:1;accent-color:var(--redglow)}
 
 <script type="module">
 /* ────────────────────────────────────────────────────────────────
-   SCANHAUS v0.2 — zxing-wasm engine
+   SCANHAUS v0.3 — scan-once + OH YEAH
    The C++ ZXing core compiled to WASM: far stronger 1D decode than
    the old JS port. We pull full-res frames off the camera, crop to
    the reticle zone (higher pixel density on the label), and decode
@@ -170,7 +189,24 @@ function status(msg){ $("status").textContent = msg; }
 function flashHit(){
   const f = $("flash"); f.classList.add("hit");
   requestAnimationFrame(()=>setTimeout(()=>f.classList.remove("hit"),60));
-  beep();
+  ohYeah();
+}
+/* "OH YEAH" — drop a real ohyeah.mp3 in the repo root and it's used
+   automatically; otherwise iOS text-to-speech does its best Macho Man. */
+const ohYeahAudio = new Audio("ohyeah.mp3");
+let ohYeahClip = false;
+ohYeahAudio.addEventListener("canplaythrough", ()=>{ ohYeahClip = true; }, {once:true});
+ohYeahAudio.load();
+function ohYeah(){
+  if(ohYeahClip){ ohYeahAudio.currentTime = 0; ohYeahAudio.play().catch(()=>{}); return; }
+  try{
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance("ohhh yeah!");
+    u.rate = 0.7; u.pitch = 0.05; u.volume = 1;
+    const deep = speechSynthesis.getVoices().find(v=>/en[-_]US/i.test(v.lang));
+    if(deep) u.voice = deep;
+    speechSynthesis.speak(u);
+  }catch(e){ beep(); }
 }
 let audioCtx = null;
 function beep(){
@@ -183,21 +219,49 @@ function beep(){
   }catch(e){}
 }
 
-/* ── scan intake ── */
+/* ── scan intake: SCAN ONCE ──
+   A code counts one time. If it's re-detected after leaving frame
+   (sliding cooldown), a modal asks: Count again or Skip. Skip mutes
+   that code for the rest of the session. ── */
+const declined = new Set();
+let modalOpen = false, dupValue = null;
+
 function ingest(value, format){
-  value = (value||"").trim(); if(!value) return;
+  value = (value||"").trim(); if(!value || modalOpen) return;
   const now = Date.now();
-  if((now - (lastSeenAt.get(value)||0)) < COOLDOWN_MS) return;
-  lastSeenAt.set(value, now);
+  const last = lastSeenAt.get(value)||0;
+  lastSeenAt.set(value, now);                    // sliding window: in-frame = no retrigger
+  if((now - last) < COOLDOWN_MS) return;
+
   const existing = store.get(value);
-  if(existing){ existing.count++; existing.last = now; }
-  else{
-    store.set(value, {value, format, count:1, first:now, last:now});
-    flashHit();
-    $("lastscan").textContent = `+ ${value} (${format})`;
+  if(existing){
+    if(declined.has(value)) return;
+    dupValue = value;
+    modalOpen = true;
+    $("modalval").textContent = `${value} (seen ×${existing.count})`;
+    $("modal").classList.add("open");
+    return;
   }
+  store.set(value, {value, format, count:1, first:now, last:now});
+  flashHit();
+  $("lastscan").textContent = `+ ${value} (${format})`;
   save(); renderAll();
 }
+
+function closeDupModal(){
+  $("modal").classList.remove("open");
+  modalOpen = false; dupValue = null;
+}
+$("btnDupCount").onclick = ()=>{
+  const r = store.get(dupValue);
+  if(r){ r.count++; r.last = Date.now(); save(); renderAll(); flashHit(); }
+  lastSeenAt.set(dupValue, Date.now());
+  closeDupModal();
+};
+$("btnDupSkip").onclick = ()=>{
+  declined.add(dupValue);
+  closeDupModal();
+};
 
 /* ── camera ── */
 async function startScan(){

@@ -61,3 +61,8 @@ read; a code seen once at the edge of frame deserves a re-check.
 - Web Share API — AirDrop the xlsx directly
 
 © PIXEL HAUS LLC. All rights reserved.
+
+## Custom scan sound
+
+New-code scans say **"OH YEAH"** via text-to-speech. Drop a clip named
+`ohyeah.mp3` in the repo root and the app uses it automatically instead.
